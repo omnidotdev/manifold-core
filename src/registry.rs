@@ -1,7 +1,7 @@
 //! Registry operations for Manifold
 
 use crate::storage::{BlobStorage, Storage};
-use crate::types::*;
+use crate::types::{Artifact, ArtifactType, Namespace, RegistryStats, Repository, Tag};
 use bytes::Bytes;
 use chrono::Utc;
 use sqlx::PgPool;
@@ -22,19 +22,20 @@ pub enum RegistryError {
     Database(#[from] sqlx::Error),
 }
 
-/// Main registry interface
+/// Main registry interface.
 pub struct Registry<B: BlobStorage> {
     storage: Storage<B>,
 }
 
 impl<B: BlobStorage> Registry<B> {
-    pub fn new(pool: PgPool, blobs: B) -> Self {
-        Self {
-            storage: Storage::new(pool, blobs),
-        }
+    /// Create a new `Registry` instance.
+    pub const fn new(storage: Storage<B>) -> Self {
+        Self { storage }
     }
 
-    pub fn pool(&self) -> &PgPool {
+    /// Return a reference to the database pool.
+    #[must_use]
+    pub const fn pool(&self) -> &PgPool {
         &self.storage.pool
     }
 
@@ -42,7 +43,16 @@ impl<B: BlobStorage> Registry<B> {
     // Namespace operations
     // =========================================================================
 
-    pub async fn create_namespace(&self, name: &str, description: Option<&str>) -> Result<Namespace, RegistryError> {
+    /// Create a namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RegistryError` if the operation fails.
+    pub async fn create_namespace(
+        &self,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<Namespace, RegistryError> {
         let now = Utc::now();
         let ns = Namespace {
             id: Uuid::new_v4(),
@@ -53,10 +63,10 @@ impl<B: BlobStorage> Registry<B> {
         };
 
         sqlx::query(
-            r#"
+            "
             INSERT INTO namespaces (id, name, description, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5)
-            "#,
+            ",
         )
         .bind(ns.id)
         .bind(&ns.name)
@@ -69,25 +79,55 @@ impl<B: BlobStorage> Registry<B> {
         Ok(ns)
     }
 
+    /// Get a namespace by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RegistryError` if the operation fails.
     pub async fn get_namespace(&self, name: &str) -> Result<Namespace, RegistryError> {
-        sqlx::query_as::<_, (Uuid, String, Option<String>, chrono::DateTime<Utc>, chrono::DateTime<Utc>)>(
-            "SELECT id, name, description, created_at, updated_at FROM namespaces WHERE name = $1",
+        sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                String,
+                Option<String>,
+                chrono::DateTime<Utc>,
+                chrono::DateTime<Utc>,
+            ),
+        >(
+            "SELECT id, name, description, created_at, updated_at FROM namespaces WHERE name = $1"
         )
         .bind(name)
         .fetch_optional(&self.storage.pool)
         .await?
-        .map(|(id, name, description, created_at, updated_at)| Namespace {
-            id,
-            name,
-            description,
-            created_at,
-            updated_at,
-        })
-        .ok_or_else(|| RegistryError::NotFound(format!("namespace: {}", name)))
+        .map(
+            |(id, name, description, created_at, updated_at)| Namespace {
+                id,
+                name,
+                description,
+                created_at,
+                updated_at,
+            },
+        )
+        .ok_or_else(|| RegistryError::NotFound(format!("namespace: {name}")))
     }
 
+    /// List all namespaces.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RegistryError` if the operation fails.
     pub async fn list_namespaces(&self) -> Result<Vec<Namespace>, RegistryError> {
-        let rows = sqlx::query_as::<_, (Uuid, String, Option<String>, chrono::DateTime<Utc>, chrono::DateTime<Utc>)>(
+        let rows = sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                String,
+                Option<String>,
+                chrono::DateTime<Utc>,
+                chrono::DateTime<Utc>,
+            ),
+        >(
             "SELECT id, name, description, created_at, updated_at FROM namespaces ORDER BY name",
         )
         .fetch_all(&self.storage.pool)
@@ -95,13 +135,15 @@ impl<B: BlobStorage> Registry<B> {
 
         Ok(rows
             .into_iter()
-            .map(|(id, name, description, created_at, updated_at)| Namespace {
-                id,
-                name,
-                description,
-                created_at,
-                updated_at,
-            })
+            .map(
+                |(id, name, description, created_at, updated_at)| Namespace {
+                    id,
+                    name,
+                    description,
+                    created_at,
+                    updated_at,
+                },
+            )
             .collect())
     }
 
@@ -109,6 +151,11 @@ impl<B: BlobStorage> Registry<B> {
     // Repository operations
     // =========================================================================
 
+    /// Create a repository within a namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RegistryError` if the operation fails.
     pub async fn create_repository(
         &self,
         namespace: &str,
@@ -132,10 +179,10 @@ impl<B: BlobStorage> Registry<B> {
         };
 
         sqlx::query(
-            r#"
+            "
             INSERT INTO repositories (id, namespace_id, name, description, artifact_type, is_public, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            "#,
+            ",
         )
         .bind(repo.id)
         .bind(repo.namespace_id)
@@ -151,14 +198,23 @@ impl<B: BlobStorage> Registry<B> {
         Ok(repo)
     }
 
-    pub async fn get_repository(&self, namespace: &str, name: &str) -> Result<Repository, RegistryError> {
+    /// Get a repository by namespace and name.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RegistryError` if the operation fails.
+    pub async fn get_repository(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Repository, RegistryError> {
         sqlx::query_as::<_, (Uuid, Uuid, String, Option<String>, String, bool, chrono::DateTime<Utc>, chrono::DateTime<Utc>)>(
-            r#"
+            "
             SELECT r.id, r.namespace_id, r.name, r.description, r.artifact_type, r.is_public, r.created_at, r.updated_at
             FROM repositories r
             JOIN namespaces n ON r.namespace_id = n.id
             WHERE n.name = $1 AND r.name = $2
-            "#,
+            ",
         )
         .bind(namespace)
         .bind(name)
@@ -183,13 +239,18 @@ impl<B: BlobStorage> Registry<B> {
                 updated_at,
             }
         })
-        .ok_or_else(|| RegistryError::NotFound(format!("repository: {}/{}", namespace, name)))
+        .ok_or_else(|| RegistryError::NotFound(format!("repository: {namespace}/{name}")))
     }
 
     // =========================================================================
     // Artifact operations
     // =========================================================================
 
+    /// Push an artifact to a repository.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RegistryError` if the operation fails.
     pub async fn push_artifact(
         &self,
         namespace: &str,
@@ -202,6 +263,7 @@ impl<B: BlobStorage> Registry<B> {
 
         // Store blob
         let digest = self.storage.blobs.put(data.clone()).await?;
+        #[allow(clippy::cast_possible_wrap)]
         let size = data.len() as i64;
         let now = Utc::now();
 
@@ -211,19 +273,23 @@ impl<B: BlobStorage> Registry<B> {
             digest: digest.clone(),
             size,
             media_type: media_type.to_string(),
-            content: if size < 1024 * 1024 { Some(data.to_vec()) } else { None },
+            content: if size < 1024 * 1024 {
+                Some(data.to_vec())
+            } else {
+                None
+            },
             created_at: now,
         };
 
         sqlx::query(
-            r#"
+            "
             INSERT INTO artifacts (id, repository_id, digest, size, media_type, content, created_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (repository_id, digest) DO UPDATE SET
                 size = EXCLUDED.size,
                 media_type = EXCLUDED.media_type,
                 content = EXCLUDED.content
-            "#,
+            ",
         )
         .bind(artifact.id)
         .bind(artifact.repository_id)
@@ -237,13 +303,24 @@ impl<B: BlobStorage> Registry<B> {
 
         // Create tag if provided
         if let Some(tag_name) = tag {
-            self.tag_artifact(namespace, repo_name, &digest, tag_name).await?;
+            self.tag_artifact(namespace, repo_name, &digest, tag_name)
+                .await?;
         }
 
         Ok(artifact)
     }
 
-    pub async fn get_artifact(&self, namespace: &str, repo_name: &str, reference: &str) -> Result<Artifact, RegistryError> {
+    /// Get an artifact by digest or tag reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RegistryError` if the operation fails.
+    pub async fn get_artifact(
+        &self,
+        namespace: &str,
+        repo_name: &str,
+        reference: &str,
+    ) -> Result<Artifact, RegistryError> {
         let repo = self.get_repository(namespace, repo_name).await?;
 
         // Reference can be a digest or a tag
@@ -252,18 +329,18 @@ impl<B: BlobStorage> Registry<B> {
         } else {
             // Look up tag
             let tag = sqlx::query_as::<_, (String,)>(
-                r#"
+                "
                 SELECT a.digest
                 FROM tags t
                 JOIN artifacts a ON t.artifact_id = a.id
                 WHERE t.repository_id = $1 AND t.name = $2
-                "#,
+                ",
             )
             .bind(repo.id)
             .bind(reference)
             .fetch_optional(&self.storage.pool)
             .await?
-            .ok_or_else(|| RegistryError::NotFound(format!("tag: {}", reference)))?;
+            .ok_or_else(|| RegistryError::NotFound(format!("tag: {reference}")))?;
             tag.0
         };
 
@@ -283,10 +360,20 @@ impl<B: BlobStorage> Registry<B> {
             content,
             created_at,
         })
-        .ok_or_else(|| RegistryError::NotFound(format!("artifact: {}", digest)))
+        .ok_or_else(|| RegistryError::NotFound(format!("artifact: {digest}")))
     }
 
-    pub async fn get_artifact_content(&self, namespace: &str, repo_name: &str, reference: &str) -> Result<Bytes, RegistryError> {
+    /// Get artifact content by digest or tag reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RegistryError` if the operation fails.
+    pub async fn get_artifact_content(
+        &self,
+        namespace: &str,
+        repo_name: &str,
+        reference: &str,
+    ) -> Result<Bytes, RegistryError> {
         let artifact = self.get_artifact(namespace, repo_name, reference).await?;
 
         // Try inline content first
@@ -295,14 +382,29 @@ impl<B: BlobStorage> Registry<B> {
         }
 
         // Fetch from blob storage
-        self.storage.blobs.get(&artifact.digest).await.map_err(Into::into)
+        self.storage
+            .blobs
+            .get(&artifact.digest)
+            .await
+            .map_err(Into::into)
     }
 
     // =========================================================================
     // Tag operations
     // =========================================================================
 
-    pub async fn tag_artifact(&self, namespace: &str, repo_name: &str, digest: &str, tag_name: &str) -> Result<Tag, RegistryError> {
+    /// Tag an artifact with a name.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RegistryError` if the operation fails.
+    pub async fn tag_artifact(
+        &self,
+        namespace: &str,
+        repo_name: &str,
+        digest: &str,
+        tag_name: &str,
+    ) -> Result<Tag, RegistryError> {
         let artifact = self.get_artifact(namespace, repo_name, digest).await?;
         let now = Utc::now();
 
@@ -316,13 +418,13 @@ impl<B: BlobStorage> Registry<B> {
         };
 
         sqlx::query(
-            r#"
+            "
             INSERT INTO tags (id, repository_id, artifact_id, name, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (repository_id, name) DO UPDATE SET
                 artifact_id = EXCLUDED.artifact_id,
                 updated_at = EXCLUDED.updated_at
-            "#,
+            ",
         )
         .bind(tag.id)
         .bind(tag.repository_id)
@@ -336,7 +438,16 @@ impl<B: BlobStorage> Registry<B> {
         Ok(tag)
     }
 
-    pub async fn list_tags(&self, namespace: &str, repo_name: &str) -> Result<Vec<String>, RegistryError> {
+    /// List all tags for a repository.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RegistryError` if the operation fails.
+    pub async fn list_tags(
+        &self,
+        namespace: &str,
+        repo_name: &str,
+    ) -> Result<Vec<String>, RegistryError> {
         let repo = self.get_repository(namespace, repo_name).await?;
 
         let tags = sqlx::query_as::<_, (String,)>(
@@ -353,6 +464,11 @@ impl<B: BlobStorage> Registry<B> {
     // Statistics
     // =========================================================================
 
+    /// Get registry statistics.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RegistryError` if the operation fails.
     pub async fn get_stats(&self) -> Result<RegistryStats, RegistryError> {
         let total_artifacts: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM artifacts")
             .fetch_one(&self.storage.pool)
@@ -371,12 +487,12 @@ impl<B: BlobStorage> Registry<B> {
             .await?;
 
         let by_type = sqlx::query_as::<_, (String, i64)>(
-            r#"
+            "
             SELECT r.artifact_type, COUNT(a.id)
             FROM repositories r
             LEFT JOIN artifacts a ON r.id = a.repository_id
             GROUP BY r.artifact_type
-            "#,
+            ",
         )
         .fetch_all(&self.storage.pool)
         .await?

@@ -41,6 +41,7 @@ pub trait BlobStorage: Send + Sync {
 }
 
 /// Compute SHA256 digest of data
+#[must_use]
 pub fn compute_digest(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
@@ -49,6 +50,7 @@ pub fn compute_digest(data: &[u8]) -> String {
 }
 
 /// Parse digest into algorithm and hash
+#[must_use]
 pub fn parse_digest(digest: &str) -> Option<(&str, &str)> {
     digest.split_once(':')
 }
@@ -59,6 +61,11 @@ pub struct FileStorage {
 }
 
 impl FileStorage {
+    /// Create a new file storage backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::Io` if the root directory cannot be created.
     pub async fn new(root: PathBuf) -> Result<Self, StorageError> {
         fs::create_dir_all(&root).await?;
         Ok(Self { root })
@@ -144,6 +151,7 @@ impl Default for MemoryStorage {
 }
 
 impl MemoryStorage {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             blobs: std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
@@ -210,7 +218,124 @@ pub struct Storage<B: BlobStorage> {
 }
 
 impl<B: BlobStorage> Storage<B> {
-    pub fn new(pool: sqlx::PgPool, blobs: B) -> Self {
+    pub const fn new(pool: sqlx::PgPool, blobs: B) -> Self {
         Self { blobs, pool }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_digest_produces_sha256_format() {
+        let digest = compute_digest(b"hello world");
+        assert!(digest.starts_with("sha256:"));
+        // sha256 hex is 64 chars
+        assert_eq!(digest.len(), 7 + 64);
+    }
+
+    #[test]
+    fn compute_digest_is_deterministic() {
+        let d1 = compute_digest(b"test data");
+        let d2 = compute_digest(b"test data");
+        assert_eq!(d1, d2);
+    }
+
+    #[test]
+    fn parse_digest_splits_correctly() {
+        let result = parse_digest("sha256:abc123");
+        assert_eq!(result, Some(("sha256", "abc123")));
+    }
+
+    #[test]
+    fn parse_digest_returns_none_on_invalid() {
+        let result = parse_digest("nocolon");
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn memory_storage_put_get_roundtrip() {
+        let storage = MemoryStorage::new();
+        let data = Bytes::from("hello world");
+        let digest = storage.put(data.clone()).await.unwrap();
+        let retrieved = storage.get(&digest).await.unwrap();
+        assert_eq!(retrieved, data);
+    }
+
+    #[tokio::test]
+    async fn memory_storage_put_with_digest_validates() {
+        let storage = MemoryStorage::new();
+        let data = Bytes::from("hello world");
+        let digest = compute_digest(&data);
+        storage.put_with_digest(&digest, data).await.unwrap();
+        assert!(storage.exists(&digest).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn memory_storage_put_with_digest_rejects_mismatch() {
+        let storage = MemoryStorage::new();
+        let data = Bytes::from("hello world");
+        let result = storage
+            .put_with_digest(
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                data,
+            )
+            .await;
+        assert!(matches!(result, Err(StorageError::DigestMismatch { .. })));
+    }
+
+    #[tokio::test]
+    async fn memory_storage_exists_returns_correctly() {
+        let storage = MemoryStorage::new();
+        let data = Bytes::from("test");
+        let digest = storage.put(data).await.unwrap();
+        assert!(storage.exists(&digest).await.unwrap());
+        assert!(!storage.exists("sha256:nonexistent").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn memory_storage_delete_removes_blob() {
+        let storage = MemoryStorage::new();
+        let data = Bytes::from("delete me");
+        let digest = storage.put(data).await.unwrap();
+        storage.delete(&digest).await.unwrap();
+        assert!(storage.get(&digest).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn memory_storage_size_returns_correct_length() {
+        let storage = MemoryStorage::new();
+        let data = Bytes::from("12345");
+        let digest = storage.put(data).await.unwrap();
+        assert_eq!(storage.size(&digest).await.unwrap(), 5);
+    }
+
+    #[tokio::test]
+    async fn file_storage_creates_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("storage");
+        let _storage = FileStorage::new(root.clone()).await.unwrap();
+        assert!(root.exists());
+    }
+
+    #[tokio::test]
+    async fn file_storage_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = FileStorage::new(dir.path().join("blobs")).await.unwrap();
+        let data = Bytes::from("file storage test");
+        let digest = storage.put(data.clone()).await.unwrap();
+        let retrieved = storage.get(&digest).await.unwrap();
+        assert_eq!(retrieved, data);
+
+        // Verify exists
+        assert!(storage.exists(&digest).await.unwrap());
+
+        // Verify size
+        assert_eq!(storage.size(&digest).await.unwrap(), data.len() as u64);
+
+        // Delete and verify gone
+        storage.delete(&digest).await.unwrap();
+        assert!(!storage.exists(&digest).await.unwrap());
     }
 }

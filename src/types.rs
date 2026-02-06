@@ -11,7 +11,7 @@ use uuid::Uuid;
 pub enum ArtifactType {
     /// OCI container image
     Container,
-    /// OpenAPI specification (JSON/YAML)
+    /// `OpenAPI` specification (JSON/YAML)
     OpenApi,
     /// GraphQL schema (SDL)
     GraphQl,
@@ -24,7 +24,8 @@ pub enum ArtifactType {
 }
 
 impl ArtifactType {
-    pub fn as_str(&self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Container => "container",
             Self::OpenApi => "openapi",
@@ -35,7 +36,8 @@ impl ArtifactType {
         }
     }
 
-    pub fn media_type(&self) -> &'static str {
+    #[must_use]
+    pub const fn media_type(&self) -> &'static str {
         match self {
             Self::Container => "application/vnd.oci.image.manifest.v1+json",
             Self::OpenApi => "application/vnd.oai.openapi+json",
@@ -172,4 +174,83 @@ pub struct RegistryStats {
     pub total_namespaces: i64,
     pub by_type: Vec<(ArtifactType, i64)>,
     pub total_size_bytes: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn artifact_type_as_str_all_variants() {
+        assert_eq!(ArtifactType::Container.as_str(), "container");
+        assert_eq!(ArtifactType::OpenApi.as_str(), "openapi");
+        assert_eq!(ArtifactType::GraphQl.as_str(), "graphql");
+        assert_eq!(ArtifactType::JsonSchema.as_str(), "json-schema");
+        assert_eq!(ArtifactType::Wasm.as_str(), "wasm");
+        assert_eq!(ArtifactType::Blob.as_str(), "blob");
+    }
+
+    #[test]
+    fn artifact_type_media_types() {
+        assert_eq!(
+            ArtifactType::Container.media_type(),
+            "application/vnd.oci.image.manifest.v1+json"
+        );
+        assert_eq!(
+            ArtifactType::OpenApi.media_type(),
+            "application/vnd.oai.openapi+json"
+        );
+        assert_eq!(ArtifactType::GraphQl.media_type(), "application/graphql");
+        assert_eq!(
+            ArtifactType::JsonSchema.media_type(),
+            "application/schema+json"
+        );
+        assert_eq!(ArtifactType::Wasm.media_type(), "application/wasm");
+        assert_eq!(ArtifactType::Blob.media_type(), "application/octet-stream");
+    }
+
+    #[test]
+    fn artifact_type_serde_roundtrip() {
+        let types = vec![
+            ArtifactType::Container,
+            ArtifactType::OpenApi,
+            ArtifactType::GraphQl,
+            ArtifactType::JsonSchema,
+            ArtifactType::Wasm,
+            ArtifactType::Blob,
+        ];
+
+        for t in types {
+            let json = serde_json::to_string(&t).unwrap();
+            let deserialized: ArtifactType = serde_json::from_str(&json).unwrap();
+            assert_eq!(t, deserialized);
+        }
+    }
+
+    #[test]
+    fn artifact_type_serde_format() {
+        // Verify SCREAMING_SNAKE_CASE serialization
+        let json = serde_json::to_string(&ArtifactType::Container).unwrap();
+        assert_eq!(json, "\"CONTAINER\"");
+
+        let json = serde_json::to_string(&ArtifactType::OpenApi).unwrap();
+        assert_eq!(json, "\"OPEN_API\"");
+
+        let json = serde_json::to_string(&ArtifactType::JsonSchema).unwrap();
+        assert_eq!(json, "\"JSON_SCHEMA\"");
+    }
+
+    #[test]
+    fn namespace_struct_debug() {
+        let ns = Namespace {
+            id: Uuid::nil(),
+            name: "test".to_string(),
+            description: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        // Verify Debug derive works
+        let debug = format!("{ns:?}");
+        assert!(debug.contains("test"));
+    }
 }
