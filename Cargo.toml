@@ -49,8 +49,9 @@ bytes = "1"
 infer = "0.16"
 
 [dev-dependencies]
-tokio-test = "0.4"
+cargo-husky = { version = "1", default-features = false, features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy", "run-cargo-test"] }
 tempfile = "3"
+tokio-test = "0.4"
 
 [profile.release]
 lto = true
