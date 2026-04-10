@@ -2,8 +2,14 @@
 name = "manifold-core"
 version = "0.1.0"
 edition = "2021"
+authors = ["Omni <team@omni.dev>"]
 description = "Core library for Manifold universal artifact registry"
 license = "Apache-2.0"
+repository = "https://github.com/omnidotdev/manifold-core"
+homepage = "https://manifold.omni.dev"
+readme = "README.md"
+keywords = ["registry", "artifact", "manifold"]
+categories = ["development-tools"]
 
 [dependencies]
 # Async runtime
